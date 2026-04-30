@@ -38,6 +38,7 @@ import {
   loadRoundDatabase,
   mergeNewRounds,
   saveRoundDatabase,
+  type PersistenceStatus,
 } from "./storage";
 import "./styles.css";
 
@@ -55,9 +56,26 @@ const navItems: Array<{ key: PageKey; label: string; icon: React.ReactNode }> = 
 ];
 
 function App() {
-  const [rawRounds, setRawRounds] = React.useState<RawRound[]>(() => loadRoundDatabase());
+  const [rawRounds, setRawRounds] = React.useState<RawRound[]>([]);
+  const [databaseStatus, setDatabaseStatus] = React.useState<PersistenceStatus | null>(null);
+  const [isLoadingDatabase, setIsLoadingDatabase] = React.useState(true);
   const [page, setPage] = React.useState<PageKey>("overview");
   const [selectedRoundId, setSelectedRoundId] = React.useState("");
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    loadRoundDatabase().then((result) => {
+      if (cancelled) return;
+      setRawRounds(result.rounds);
+      setDatabaseStatus(result.status);
+      setIsLoadingDatabase(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const rounds = React.useMemo(
     () => buildRoundMetrics(rawRounds.map((data, index) => ({ path: `local:${index}`, data }))),
@@ -92,7 +110,7 @@ function App() {
     const parsed = await parseZipForImport(file, addLog);
     const merged = mergeNewRounds(rawRounds, parsed.rounds);
     setRawRounds(merged.rounds);
-    saveRoundDatabase(merged.rounds);
+    setDatabaseStatus(await saveRoundDatabase(merged.rounds));
 
     return {
       summary: parsed.summary,
@@ -101,9 +119,9 @@ function App() {
     };
   };
 
-  const clearAll = () => {
-    if (!window.confirm("Clear all locally stored rounds?")) return;
-    clearRoundDatabase();
+  const clearAll = async () => {
+    if (!window.confirm("Clear all stored rounds from the persistent database?")) return;
+    setDatabaseStatus(await clearRoundDatabase());
     setRawRounds([]);
     setSelectedRoundId("");
   };
@@ -142,8 +160,8 @@ function App() {
           <div className="db-actions">
             <div className="topbar-stat">
               <span>Local database</span>
-              <strong>{rounds.length} rounds</strong>
-              <small>{rounds.at(-1)?.courseName ?? "No rounds stored"}</small>
+              <strong>{isLoadingDatabase ? "Loading..." : `${rounds.length} rounds`}</strong>
+              <small>{databaseStatus?.message ?? rounds.at(-1)?.courseName ?? "No rounds stored"}</small>
             </div>
             <button type="button" onClick={() => downloadRoundDatabase(rawRounds)} disabled={!rawRounds.length} title="Export local JSON">
               <Download size={16} />
@@ -158,6 +176,8 @@ function App() {
 
         {page === "import" ? (
           <ImportPage onImport={handleImport} rawRounds={rawRounds} />
+        ) : isLoadingDatabase ? (
+          <EmptyDatabase title="Loading stored rounds" detail="Reading the persistent database." />
         ) : !rounds.length ? (
           <EmptyDatabase />
         ) : (
@@ -208,12 +228,12 @@ function ImportPage({ onImport, rawRounds }: { onImport: (file: File, logs: Para
   );
 }
 
-function EmptyDatabase() {
+function EmptyDatabase({ title = "No local rounds stored", detail = "Upload a Golf Pad ZIP to populate the persistent database." }: { title?: string; detail?: string }) {
   return (
     <section className="empty-database panel">
       <Database size={28} />
-      <h2>No local rounds stored</h2>
-      <p>The ZIP never leaves this browser. After parsing, only normalized round data is kept in local storage.</p>
+      <h2>{title}</h2>
+      <p>{detail}</p>
     </section>
   );
 }

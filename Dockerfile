@@ -7,7 +7,8 @@ RUN npm run build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-RUN npm install -g serve@14.2.4
 COPY --from=build /app/dist ./dist
+COPY server.mjs ./server.mjs
+ENV GOLFPAD_DATA_DIR=/data
 EXPOSE 4173
-CMD ["serve", "-s", "dist", "-l", "4173"]
+CMD ["node", "server.mjs"]

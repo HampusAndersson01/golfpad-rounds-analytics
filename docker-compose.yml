@@ -4,4 +4,9 @@ services:
       context: .
     ports:
       - "36490:4173"
+    volumes:
+      - golfpad-data:/data
     restart: unless-stopped
+
+volumes:
+  golfpad-data:
