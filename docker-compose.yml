@@ -1,0 +1,7 @@
+services:
+  golfpad-dashboard:
+    build:
+      context: .
+    ports:
+      - "36490:4173"
+    restart: unless-stopped
