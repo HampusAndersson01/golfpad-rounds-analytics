@@ -17,12 +17,16 @@ import {
 import {
   aggregateClubPerformance,
   aggregateClubTrends,
+  buildStablefordDamageAnalysis,
   buildRoundMetrics,
   compareRecentForm,
   detectSchema,
   formatNumber,
   getOverviewStats,
   movingAverage,
+  recalculateStablefordForRounds,
+  strokeIndexConfigKey,
+  type ManualStrokeIndexConfig,
   type RawRound,
   type RoundMetric,
 } from "./analytics";
@@ -66,7 +70,7 @@ const navItems: Array<{ key: PageKey; label: string; icon: React.ReactNode }> = 
   { key: "import", label: "Import", icon: <Upload size={17} /> },
   { key: "overview", label: "Overview", icon: <CircleGauge size={17} /> },
   { key: "handicap", label: "Handicap", icon: <Settings size={17} /> },
-  { key: "trends", label: "Score Trends", icon: <LineChart size={17} /> },
+  { key: "trends", label: "Stableford Trends", icon: <LineChart size={17} /> },
   { key: "categories", label: "Categories", icon: <BarChart3 size={17} /> },
   { key: "form", label: "Recent Form", icon: <TrendingUp size={17} /> },
   { key: "clubs", label: "Clubs", icon: <Dumbbell size={17} /> },
@@ -78,6 +82,7 @@ function App() {
   const [rawRounds, setRawRounds] = React.useState<RawRound[]>([]);
   const [databaseStatus, setDatabaseStatus] = React.useState<PersistenceStatus | null>(null);
   const [handicapHistory, setHandicapHistory] = React.useState<HandicapEntry[]>(() => normalizeHandicapHistory([]));
+  const [strokeIndexConfigs, setStrokeIndexConfigs] = React.useState<ManualStrokeIndexConfig[]>([]);
   const [isLoadingDatabase, setIsLoadingDatabase] = React.useState(true);
   const [page, setPage] = React.useState<PageKey>("overview");
   const [selectedRoundId, setSelectedRoundId] = React.useState("");
@@ -87,10 +92,15 @@ function App() {
 
     loadRoundDatabase().then((result) => {
       if (cancelled) return;
-      setRawRounds(result.rounds);
+      const enrichedRounds = recalculateStablefordForRounds(result.rounds, result.strokeIndexConfigs, currentHandicapFromHistory(result.handicapHistory));
+      setRawRounds(enrichedRounds);
       setHandicapHistory(result.handicapHistory);
+      setStrokeIndexConfigs(result.strokeIndexConfigs);
       setDatabaseStatus(result.status);
       setIsLoadingDatabase(false);
+      if (JSON.stringify(enrichedRounds) !== JSON.stringify(result.rounds)) {
+        void saveRoundDatabase(enrichedRounds, result.handicapHistory, result.strokeIndexConfigs).then(setDatabaseStatus);
+      }
     });
 
     return () => {
@@ -99,8 +109,8 @@ function App() {
   }, []);
 
   const rounds = React.useMemo(
-    () => buildRoundMetrics(rawRounds.map((data, index) => ({ path: `local:${index}`, data }))),
-    [rawRounds],
+    () => buildRoundMetrics(rawRounds.map((data, index) => ({ path: `local:${index}`, data })), strokeIndexConfigs),
+    [rawRounds, strokeIndexConfigs],
   );
 
   React.useEffect(() => {
@@ -116,11 +126,12 @@ function App() {
   const clubRows = React.useMemo(() => aggregateClubPerformance(rounds), [rounds]);
   const clubTrends = React.useMemo(() => aggregateClubTrends(rounds).slice(0, 8), [rounds]);
   const form = React.useMemo(() => compareRecentForm(handicapRounds), [handicapRounds]);
-  const blowUps = React.useMemo(() => buildHandicapBlowUpAnalysis(handicapRounds, currentHandicap), [handicapRounds, currentHandicap]);
+  const blowUps = React.useMemo(() => buildStablefordDamageAnalysis(handicapRounds), [handicapRounds]);
   const [selectedHandicapYear, setSelectedHandicapYear] = React.useState("all");
   const handicapForecast = React.useMemo(() => buildHandicapForecast(handicapHistory, handicapRounds, selectedHandicapYear), [handicapHistory, handicapRounds, selectedHandicapYear]);
   const handicapTrendSummary = React.useMemo(() => buildSeasonTrendSummary(handicapHistory, selectedHandicapYear, handicapForecast), [handicapHistory, selectedHandicapYear, handicapForecast]);
-  const handicapInsights = React.useMemo(() => buildHandicapInsights(handicapRounds, blowUps, currentHandicap, handicapHistory, handicapForecast), [handicapRounds, blowUps, currentHandicap, handicapHistory, handicapForecast]);
+  const handicapDamage = React.useMemo(() => buildHandicapBlowUpAnalysis(handicapRounds, currentHandicap), [handicapRounds, currentHandicap]);
+  const handicapInsights = React.useMemo(() => buildHandicapInsights(handicapRounds, handicapDamage, currentHandicap, handicapHistory, handicapForecast), [handicapRounds, handicapDamage, currentHandicap, handicapHistory, handicapForecast]);
   const insights = handicapInsights;
   const selectedRound = handicapRounds.find((round) => round.id === selectedRoundId) ?? handicapRounds.at(-1);
   const schema = React.useMemo(() => detectSchema(rawRounds), [rawRounds]);
@@ -129,7 +140,8 @@ function App() {
     () =>
       rounds.map((round, index) => ({
         ...round,
-        movingAverage: movingAverage(rounds, index, 5, "grossScore18"),
+        movingAverage: movingAverage(rounds, index, 5, "stablefordTotal18"),
+        grossMovingAverage: movingAverage(rounds, index, 5, "grossScore18"),
       })),
     [rounds],
   );
@@ -138,9 +150,9 @@ function App() {
   const handleImport = async (file: File, addLog: Parameters<typeof parseZipForImport>[1]): Promise<ImportResult> => {
     const parsed = await parseZipForImport(file, addLog);
     const merged = mergeNewRounds(rawRounds, parsed.rounds);
-    const withContext = attachRoundHandicapContext(merged.rounds, handicapHistory).rounds;
+    const withContext = recalculateStablefordForRounds(attachRoundHandicapContext(merged.rounds, handicapHistory).rounds, strokeIndexConfigs, currentHandicap);
     setRawRounds(withContext);
-    setDatabaseStatus(await saveRoundDatabase(withContext, handicapHistory));
+    setDatabaseStatus(await saveRoundDatabase(withContext, handicapHistory, strokeIndexConfigs));
 
     return {
       summary: parsed.summary,
@@ -154,9 +166,10 @@ function App() {
     const parsed = await parseMinGolfForImport(file, addLog);
     const nextHistory = mergeHandicapHistory(handicapHistory, parsed.records);
     const contextualized = attachRoundHandicapContext(rawRounds, nextHistory);
+    const withStableford = recalculateStablefordForRounds(contextualized.rounds, strokeIndexConfigs, currentHandicapFromHistory(nextHistory));
     setHandicapHistory(nextHistory);
-    setRawRounds(contextualized.rounds);
-    setDatabaseStatus(await saveRoundDatabase(contextualized.rounds, nextHistory));
+    setRawRounds(withStableford);
+    setDatabaseStatus(await saveRoundDatabase(withStableford, nextHistory, strokeIndexConfigs));
 
     return {
       summary: parsed.summary,
@@ -167,15 +180,25 @@ function App() {
 
   const clearAll = async () => {
     if (!window.confirm("Clear all stored rounds from the persistent database?")) return;
-    setDatabaseStatus(await clearRoundDatabase(handicapHistory));
+    setDatabaseStatus(await clearRoundDatabase(handicapHistory, strokeIndexConfigs));
     setRawRounds([]);
     setSelectedRoundId("");
   };
 
   const updateHandicap = async (nextHandicap: number) => {
     const nextHistory = appendHandicapChange(handicapHistory, nextHandicap);
+    const recalculated = recalculateStablefordForRounds(attachRoundHandicapContext(rawRounds, nextHistory).rounds, strokeIndexConfigs, nextHandicap);
     setHandicapHistory(nextHistory);
-    setDatabaseStatus(await saveRoundDatabase(rawRounds, nextHistory));
+    setRawRounds(recalculated);
+    setDatabaseStatus(await saveRoundDatabase(recalculated, nextHistory, strokeIndexConfigs));
+  };
+
+  const saveStrokeIndexConfig = async (config: ManualStrokeIndexConfig) => {
+    const nextConfigs = [...strokeIndexConfigs.filter((row) => strokeIndexConfigKey(row.courseName, row.teeName) !== strokeIndexConfigKey(config.courseName, config.teeName)), config];
+    const recalculated = recalculateStablefordForRounds(rawRounds, nextConfigs, currentHandicap);
+    setStrokeIndexConfigs(nextConfigs);
+    setRawRounds(recalculated);
+    setDatabaseStatus(await saveRoundDatabase(recalculated, handicapHistory, nextConfigs));
   };
 
   return (
@@ -215,7 +238,7 @@ function App() {
               <strong>{isLoadingDatabase ? "Loading..." : `${rounds.length} rounds`}</strong>
               <small>{databaseStatus?.message ?? rounds.at(-1)?.courseName ?? "No rounds stored"}</small>
             </div>
-            <button type="button" onClick={() => downloadRoundDatabase(rawRounds, handicapHistory)} disabled={!rawRounds.length} title="Export local JSON">
+            <button type="button" onClick={() => downloadRoundDatabase(rawRounds, handicapHistory, strokeIndexConfigs)} disabled={!rawRounds.length} title="Export local JSON">
               <Download size={16} />
               Export
             </button>
@@ -227,7 +250,7 @@ function App() {
         </header>
 
         {page === "import" ? (
-          <ImportPage onImport={handleImport} onMinGolfImport={handleMinGolfImport} rawRounds={rawRounds} />
+          <ImportPage onImport={handleImport} onMinGolfImport={handleMinGolfImport} rawRounds={rawRounds} strokeIndexConfigs={strokeIndexConfigs} onSaveStrokeIndexConfig={saveStrokeIndexConfig} />
         ) : isLoadingDatabase ? (
           <EmptyDatabase title="Loading stored rounds" detail="Reading the persistent database." />
         ) : !rounds.length && page !== "handicap" ? (
@@ -248,7 +271,7 @@ function App() {
                 onUpdateHandicap={updateHandicap}
               />
             )}
-            {page === "trends" && <ScoreTrends data={trendData} />}
+            {page === "trends" && <ScoreTrends data={trendData} handicapData={handicapTrendData} />}
             {page === "categories" && <CategoryTrends data={rounds} />}
             {page === "form" && <RecentForm form={form} />}
             {page === "clubs" && <ClubPerformance rows={clubRows} trends={clubTrends} />}
@@ -265,10 +288,14 @@ function ImportPage({
   onImport,
   onMinGolfImport,
   rawRounds,
+  strokeIndexConfigs,
+  onSaveStrokeIndexConfig,
 }: {
   onImport: (file: File, logs: Parameters<typeof parseZipForImport>[1]) => Promise<ImportResult>;
   onMinGolfImport: (file: File, logs: Parameters<typeof parseMinGolfForImport>[1]) => Promise<MinGolfImportResult>;
   rawRounds: RawRound[];
+  strokeIndexConfigs: ManualStrokeIndexConfig[];
+  onSaveStrokeIndexConfig: (config: ManualStrokeIndexConfig) => Promise<void>;
 }) {
   const schema = React.useMemo(() => detectSchema(rawRounds), [rawRounds]);
   const officialEntries = rawRounds.filter((round) => round.round_handicap_context?.nearest_official_record_date).length;
@@ -281,6 +308,7 @@ function ImportPage({
         disabled={!rawRounds.length}
         disabledMessage="Import at least one Golf Pad round before importing handicap history so rounds can be matched."
       />
+      <StrokeIndexSetup rawRounds={rawRounds} configs={strokeIndexConfigs} onSave={onSaveStrokeIndexConfig} />
       <article className="panel import-details">
         <h2>Stored Data</h2>
         <div className="import-detail-grid">
@@ -307,6 +335,72 @@ function ImportPage({
         </div>
       </article>
     </section>
+  );
+}
+
+function StrokeIndexSetup({ rawRounds, configs, onSave }: { rawRounds: RawRound[]; configs: ManualStrokeIndexConfig[]; onSave: (config: ManualStrokeIndexConfig) => Promise<void> }) {
+  const courseTees = React.useMemo(
+    () =>
+      Array.from(
+        new Map(
+          rawRounds.map((round) => {
+            const courseName = round.round_metadata?.course_name ?? "Unknown course";
+            const teeName = round.round_metadata?.tee_name ?? "Unknown tee";
+            return [strokeIndexConfigKey(courseName, teeName), { courseName, teeName }];
+          }),
+        ).values(),
+      ),
+    [rawRounds],
+  );
+  const [selectedKey, setSelectedKey] = React.useState("");
+  const selected = courseTees.find((row) => strokeIndexConfigKey(row.courseName, row.teeName) === selectedKey) ?? courseTees[0];
+  const existing = selected ? configs.find((row) => strokeIndexConfigKey(row.courseName, row.teeName) === strokeIndexConfigKey(selected.courseName, selected.teeName)) : undefined;
+  const [draft, setDraft] = React.useState("");
+  const [isSaving, setIsSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!selected) return;
+    setSelectedKey(strokeIndexConfigKey(selected.courseName, selected.teeName));
+  }, [selected]);
+
+  React.useEffect(() => {
+    setDraft(existing?.strokeIndexes.join(", ") ?? "");
+  }, [existing, selectedKey]);
+
+  if (!courseTees.length) return null;
+
+  const parsed = draft.split(/[,\s]+/).map((value) => Number(value.trim())).filter((value) => Number.isFinite(value));
+  const isValid = parsed.length === 18 && new Set(parsed).size === 18 && parsed.every((value) => value >= 1 && value <= 18);
+
+  const save = async () => {
+    if (!selected || !isValid) return;
+    setIsSaving(true);
+    await onSave({ ...selected, strokeIndexes: parsed, updatedAt: new Date().toISOString() });
+    setIsSaving(false);
+  };
+
+  return (
+    <article className="panel stroke-index-panel">
+      <h2>Manual Hole Stroke Index</h2>
+      <div className="stroke-index-grid">
+        <label>
+          Course tee
+          <select className="select-input" value={selectedKey} onChange={(event) => setSelectedKey(event.target.value)}>
+            {courseTees.map((row) => (
+              <option key={strokeIndexConfigKey(row.courseName, row.teeName)} value={strokeIndexConfigKey(row.courseName, row.teeName)}>
+                {row.courseName} - {row.teeName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Stroke index order for holes 1-18
+          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="10, 4, 16, 2, ..." />
+        </label>
+        <button type="button" onClick={save} disabled={!isValid || isSaving}>{isSaving ? "Saving" : "Save index"}</button>
+      </div>
+      <p>{existing ? "Manual index is active for this course and tee." : "Add this when Golf Pad exports do not include exact hole stroke index."}</p>
+    </article>
   );
 }
 
@@ -349,18 +443,18 @@ function Overview({
   return (
     <>
       <section className="kpi-grid">
-        <StatCard label="Rounds analyzed" value={overview.totalRounds} />
-        <StatCard label="Current handicap" value={formatNumber(currentHandicap, 1)} detail="Active analytics baseline" />
-        <StatCard label="Vs handicap expectation" value={formatNumber(handicapOverview.averageVsExpectation, 1)} detail="Negative is outperforming" tone={(handicapOverview.averageVsExpectation ?? 0) <= 0 ? "positive" : "negative"} />
-        <StatCard label="Rounds beating baseline" value={handicapOverview.roundsBelowExpectation} detail={`${handicapOverview.roundsAboveExpectation} above expectation`} tone="positive" />
-        <StatCard label="Average gross / 18" value={formatNumber(overview.averageGross, 1)} detail={`${overview.normalizedRounds} partial rounds normalized`} />
-        <StatCard label="Best score / 18" value={formatNumber(overview.bestScore, 1)} detail={overview.bestRound?.courseName} tone="positive" />
-        <StatCard label="Average putts / 18" value={formatNumber(overview.averagePutts, 1)} />
-        <StatCard label="Average penalties / 18" value={formatNumber(overview.averagePenalties, 1)} />
+        <StatCard label="Average Stableford Points" value={formatNumber(overview.averageStableford, 1)} detail={`${overview.normalizedRounds} partial rounds normalized`} tone={(overview.averageStableford ?? 0) >= 36 ? "positive" : undefined} />
+        <StatCard label="Best Stableford Round" value={formatNumber(overview.bestStableford, 1)} detail={overview.bestStablefordRound?.courseName} tone="positive" />
+        <StatCard label="Stableford Trend" value={formatNumber(overview.stablefordTrend, 1)} detail="Last 5 rounds" tone={(overview.stablefordTrend ?? 0) >= (overview.averageStableford ?? 36) ? "positive" : "negative"} />
+        <StatCard label="Stableford vs Handicap Expectation" value={formatNumber(overview.stablefordVsExpectation, 1)} detail="36 points is handicap target" tone={(overview.stablefordVsExpectation ?? 0) >= 0 ? "positive" : "negative"} />
+        <StatCard label="Stable Holes %" value={`${formatNumber(overview.stableHolePct, 0)}%`} detail="Holes with 2+ points" tone="positive" />
+        <StatCard label="0 Point Hole Frequency" value={formatNumber(overview.zeroPointFrequency, 1)} detail="Per 18 holes" tone="negative" />
+        <StatCard label="Current handicap" value={formatNumber(currentHandicap, 1)} detail="Round-time handicap is used where available" />
+        <StatCard label="Average gross / 18" value={formatNumber(overview.averageGross, 1)} detail="Secondary reference" />
       </section>
       <section className="two-col">
-        <ChartPanel title="Gross Score Over Time" data={trendData} lines={[{ key: "grossScore18", name: "Gross / 18", color: "var(--green)" }, { key: "movingAverage", name: "5-round avg", color: "var(--gold)" }]} xKey="shortDate" />
-        <ChartPanel title="Performance vs Handicap Expectation" data={rounds} lines={[{ key: "performanceVsHandicap18", name: "Vs expectation", color: "var(--green)" }, { key: "handicapMovingAverage", name: "5-round avg", color: "var(--gold)" }]} xKey="shortDate" />
+        <ChartPanel title="Stableford Points Over Time" data={trendData} lines={[{ key: "stablefordTotal18", name: "Stableford / 18", color: "var(--green)" }, { key: "movingAverage", name: "5-round avg", color: "var(--gold)" }, { key: "stablefordExpectation18", name: "36-point expectation", color: "var(--blue)" }]} xKey="shortDate" />
+        <ChartPanel title="Stableford vs Handicap Expectation" data={rounds} lines={[{ key: "stablefordVsExpectation18", name: "Points vs 36", color: "var(--green)" }, { key: "handicapMovingAverage", name: "5-round deficit", color: "var(--gold)" }]} xKey="shortDate" />
       </section>
     </>
   );
@@ -510,12 +604,17 @@ function HandicapPage({
   );
 }
 
-function ScoreTrends({ data }: { data: RoundMetric[] }) {
+function ScoreTrends({ data, handicapData }: { data: RoundMetric[]; handicapData: ReturnType<typeof buildHandicapTrendData> }) {
   return (
     <section className="chart-stack">
-      <ChartPanel title="Gross Score Per 18" data={data} lines={[{ key: "grossScore18", name: "Gross / 18", color: "var(--green)" }, { key: "movingAverage", name: "5-round avg", color: "var(--gold)" }]} xKey="shortDate" />
-      <ChartPanel title="Score Over Par Per 18" data={data} lines={[{ key: "grossOverPar18", name: "Over par / 18", color: "var(--red)" }]} xKey="shortDate" />
-      <ChartPanel title="Front 9 vs Back 9" data={data} lines={[{ key: "front9Score", name: "Front", color: "var(--blue)" }, { key: "back9Score", name: "Back", color: "var(--gold)" }]} xKey="shortDate" />
+      <ChartPanel title="Stableford Points Per 18" data={data} lines={[{ key: "stablefordTotal18", name: "Stableford / 18", color: "var(--green)" }, { key: "stablefordMovingAverage5", name: "5-round avg", color: "var(--gold)" }, { key: "stablefordMovingAverage10", name: "10-round avg", color: "var(--blue)" }]} xKey="shortDate" />
+      <ChartPanel title="Stableford and Handicap Progression" data={handicapData} lines={[{ key: "stablefordAverage", name: "5-round Stableford", color: "var(--green)" }, { key: "handicap", name: "Handicap", color: "var(--gold)" }]} xKey="label" />
+      <ChartPanel title="Stableford Consistency Trend" data={data} lines={[{ key: "stablefordConsistency", name: "Consistency index", color: "var(--green)" }, { key: "stableHolePct", name: "Stable holes %", color: "var(--blue)" }]} xKey="shortDate" />
+      <ChartPanel title="Front 9 vs Back 9 Stableford" data={data} lines={[{ key: "front9Stableford", name: "Front 9 points", color: "var(--blue)" }, { key: "back9Stableford", name: "Back 9 points", color: "var(--gold)" }]} xKey="shortDate" />
+      <section className="two-col">
+        <ChartPanel title="Gross Score Per 18" data={data} lines={[{ key: "grossScore18", name: "Gross / 18", color: "var(--muted)" }, { key: "grossMovingAverage", name: "5-round avg", color: "var(--gold)" }]} xKey="shortDate" />
+        <ChartPanel title="Gross Over Par Per 18" data={data} lines={[{ key: "grossOverPar18", name: "Over par / 18", color: "var(--red)" }]} xKey="shortDate" />
+      </section>
     </section>
   );
 }
@@ -550,38 +649,82 @@ function RecentForm({ form }: { form: ReturnType<typeof compareRecentForm> }) {
   );
 }
 
-function BlowUpPanel({ data, rounds }: { data: ReturnType<typeof buildHandicapBlowUpAnalysis>; rounds: HandicapRoundMetric[] }) {
+function BlowUpPanel({ data, rounds }: { data: ReturnType<typeof buildStablefordDamageAnalysis>; rounds: HandicapRoundMetric[] }) {
   const totalHoles = data.summary.totalHoles || 1;
   return (
     <section className="chart-stack">
       <section className="kpi-grid">
-        <StatCard label="True blow-up frequency" value={`${formatNumber((data.summary.trueBlowUps / totalHoles) * 100, 0)}%`} detail={`Threshold: +${data.blowUpThresholdToPar} or worse`} tone="negative" />
-        <StatCard label="Mild damage holes" value={`${formatNumber((data.summary.mildDamage / totalHoles) * 100, 0)}%`} detail={`${data.summary.mildDamage} total`} />
-        <StatCard label="Stable holes" value={`${formatNumber((data.summary.stable / totalHoles) * 100, 0)}%`} detail={`${data.summary.stable} within expectation`} tone="positive" />
-        <StatCard label="Outperforming holes" value={`${formatNumber((data.summary.outperforming / totalHoles) * 100, 0)}%`} detail={`${data.summary.outperforming} better than baseline`} tone="positive" />
+        <StatCard label="0 Point Hole Frequency" value={`${formatNumber((data.summary.zeroPointHoles / totalHoles) * 100, 0)}%`} detail={`${data.summary.zeroPointHoles} true blow-up holes`} tone="negative" />
+        <StatCard label="Average 1 Point Holes" value={formatNumber(averageRoundValue(rounds, "onePointHoles18"), 1)} detail="Mild damage per 18" />
+        <StatCard label="Average Stable Holes" value={formatNumber(averageRoundValue(rounds, "twoPointHoles18"), 1)} detail="2-point holes per 18" tone="positive" />
+        <StatCard label="Average Gained Holes" value={formatNumber(averageRoundValue(rounds, "gainedHoles18"), 1)} detail="3+ point holes per 18" tone="positive" />
+        <StatCard label="Scoring Holes %" value={`${formatNumber(data.summary.scoringHolePct, 0)}%`} detail="1+ Stableford points" />
+        <StatCard label="Stable Holes %" value={`${formatNumber(data.summary.stableHolePct, 0)}%`} detail="2+ Stableford points" tone="positive" />
+        <StatCard label="No-Zero Rounds" value={data.summary.roundsWithoutZeroes} detail={`${rounds.length} total rounds`} tone="positive" />
+        <StatCard label="High Momentum Rounds" value={data.summary.highScoringMomentumRounds} detail="Strong closing scoring stretches" tone="positive" />
       </section>
       <section className="two-col">
-      <ChartPanel title="Handicap-Aware Damage Per 18" data={rounds} lines={[{ key: "trueBlowUps18", name: "True blow-ups / 18", color: "var(--red)" }, { key: "mildDamage18", name: "Mild damage / 18", color: "var(--gold)" }, { key: "outperformingHoles18", name: "Better holes / 18", color: "var(--green)" }]} xKey="shortDate" />
+      <ChartPanel title="Zero-Point Holes Per Round" data={rounds} lines={[{ key: "zeroPointHoles18", name: "0-point holes / 18", color: "var(--red)" }, { key: "onePointHoles18", name: "1-point holes / 18", color: "var(--gold)" }, { key: "gainedHoles18", name: "3+ point holes / 18", color: "var(--green)" }]} xKey="shortDate" />
       <article className="panel">
-        <h2>Worst Holes vs Expectation</h2>
+        <h2>Zero-Point Frequency by Hole</h2>
         <div className="rank-list">
-          {data.worstHoleNumbers.map((hole) => (
+          {data.byHoleNumber.slice(0, 8).map((hole) => (
             <div key={hole.holeNumber}>
               <strong>Hole {hole.holeNumber}</strong>
-              <span>{formatNumber(hole.averageVsExpectation, 2)} vs expected</span>
-              <small>{hole.majorBlowUps} true blow-ups, {hole.mildDamage} mild</small>
+              <span>{formatNumber(hole.zeroRate, 0)}% zeroes</span>
+              <small>{formatNumber(hole.averagePoints, 2)} avg points</small>
             </div>
           ))}
         </div>
-        <div className="collapse-meter">
-          <span>Back nine collapse rounds</span>
-          <strong>{data.backNineCollapses}</strong>
-          <p>Rounds where the back nine was at least 4 strokes worse than the front nine.</p>
-        </div>
       </article>
+      </section>
+      <section className="two-col">
+        <article className="panel">
+          <h2>Zero-Point Causes</h2>
+          <div className="rank-list">
+            {data.recurringZeroCauses.map((row) => (
+              <div key={row.cause}>
+                <strong>{row.cause}</strong>
+                <span>{row.count}</span>
+                <small>Recorded zero-point holes</small>
+              </div>
+            ))}
+          </div>
+          <div className="collapse-meter">
+            <span>Practice ROI estimate</span>
+            <strong>{data.practiceLeak.area}</strong>
+            <p>{data.practiceLeak.reason} Estimated upside: {formatNumber(data.practiceLeak.estimate, 1)} Stableford points per round.</p>
+          </div>
+        </article>
+        <article className="panel">
+          <h2>Zero-Point Frequency by Par</h2>
+          <div className="rank-list">
+            {data.byPar.map((row) => (
+              <div key={row.par}>
+                <strong>Par {row.par}</strong>
+                <span>{formatNumber(row.zeroRate, 0)}% zeroes</span>
+                <small>{formatNumber(row.averagePoints, 2)} avg points</small>
+              </div>
+            ))}
+          </div>
+          <div className="collapse-meter">
+            <span>Back-nine Stableford gap</span>
+            <strong>{formatNumber(data.frontBackGap, 1)}</strong>
+            <p>Positive values mean the back nine is scoring more Stableford points than the front nine.</p>
+          </div>
+        </article>
       </section>
     </section>
   );
+}
+
+function averageRoundValue(rounds: HandicapRoundMetric[], key: keyof HandicapRoundMetric) {
+  const values = rounds.map((round) => {
+    const value = round[key];
+    return typeof value === "number" ? value : null;
+  });
+  const valid = values.filter((value): value is number => value !== null);
+  return valid.length ? valid.reduce((total, value) => total + value, 0) / valid.length : null;
 }
 
 createRoot(document.getElementById("root")!).render(

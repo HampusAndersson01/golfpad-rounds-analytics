@@ -153,7 +153,7 @@ export function mergeHandicapHistory(existing: HandicapEntry[], incoming: Handic
 }
 
 export function buildHandicapRoundMetrics(rounds: RoundMetric[], fallbackHandicap: number): HandicapRoundMetric[] {
-  const performances = rounds.map((round) => calculateRoundPerformanceVsHandicap18(round, handicapForRound(round, fallbackHandicap)));
+  const performances = rounds.map((round) => round.stablefordTotal18 === null ? null : 36 - round.stablefordTotal18);
   return rounds.map((round, index) => {
     const handicap = handicapForRound(round, fallbackHandicap);
     const holeEvaluations = round.holes.map((hole) => evaluateHole(hole, handicap));
@@ -162,11 +162,12 @@ export function buildHandicapRoundMetrics(rounds: RoundMetric[], fallbackHandica
       : round.grossOverPar !== null
         ? round.grossScore
         : null;
-    const performanceVsHandicap = expectedScore !== null && round.grossScore !== null ? round.grossScore - expectedScore : null;
-    const stableHoles = holeEvaluations.filter((hole) => hole.classification === "stable").length;
-    const mildDamageHoles = holeEvaluations.filter((hole) => hole.classification === "mild-damage").length;
-    const majorBlowUpHoles = holeEvaluations.filter((hole) => hole.classification === "major-blow-up").length;
-    const outperformingHoles = holeEvaluations.filter((hole) => hole.classification === "better").length;
+    const performanceVsHandicap18 = round.stablefordTotal18 === null ? null : 36 - round.stablefordTotal18;
+    const performanceVsHandicap = scaleToRound(performanceVsHandicap18, round.normalizationFactor);
+    const stableHoles = round.stablefordPerHole.filter((hole) => hole.points === 2).length;
+    const mildDamageHoles = round.stablefordPerHole.filter((hole) => hole.points === 1).length;
+    const majorBlowUpHoles = round.stablefordPerHole.filter((hole) => hole.points === 0).length;
+    const outperformingHoles = round.stablefordPerHole.filter((hole) => hole.points >= 3).length;
 
     return {
       ...round,
@@ -174,7 +175,7 @@ export function buildHandicapRoundMetrics(rounds: RoundMetric[], fallbackHandica
       expectedScore,
       expectedScore18: scaleTo18(expectedScore, round.normalizationFactor),
       performanceVsHandicap,
-      performanceVsHandicap18: scaleTo18(performanceVsHandicap, round.normalizationFactor),
+      performanceVsHandicap18,
       handicapHoleEvaluations: holeEvaluations,
       outperformingHoles,
       stableHoles,
@@ -206,10 +207,10 @@ export function buildHandicapOverview(rounds: HandicapRoundMetric[]) {
 }
 
 export function buildHandicapBlowUpAnalysis(rounds: HandicapRoundMetric[], handicap: number): HandicapBlowUpAnalysis {
-  const byHole = new Map<number, HandicapHoleEvaluation[]>();
+  const byHole = new Map<number, Array<{ zero: boolean; one: boolean; points: number }>>();
   rounds.forEach((round) => {
-    round.handicapHoleEvaluations.forEach((hole) => {
-      byHole.set(hole.holeNumber, [...(byHole.get(hole.holeNumber) ?? []), hole]);
+    round.stablefordPerHole.forEach((hole) => {
+      byHole.set(hole.holeNumber, [...(byHole.get(hole.holeNumber) ?? []), { zero: hole.points === 0, one: hole.points === 1, points: hole.points }]);
     });
   });
 
@@ -219,7 +220,7 @@ export function buildHandicapBlowUpAnalysis(rounds: HandicapRoundMetric[], handi
       mildDamage: total.mildDamage + round.mildDamageHoles,
       stable: total.stable + round.stableHoles,
       outperforming: total.outperforming + round.outperformingHoles,
-      totalHoles: total.totalHoles + round.handicapHoleEvaluations.length,
+      totalHoles: total.totalHoles + round.stablefordPerHole.length,
     }),
     { trueBlowUps: 0, mildDamage: 0, stable: 0, outperforming: 0, totalHoles: 0 },
   );
@@ -230,13 +231,13 @@ export function buildHandicapBlowUpAnalysis(rounds: HandicapRoundMetric[], handi
     worstHoleNumbers: Array.from(byHole.entries())
       .map(([holeNumber, holes]) => ({
         holeNumber,
-        averageVsExpectation: average(holes.map((hole) => hole.deltaToExpectation)) ?? 0,
-        majorBlowUps: holes.filter((hole) => hole.classification === "major-blow-up").length,
-        mildDamage: holes.filter((hole) => hole.classification === "mild-damage").length,
+        averageVsExpectation: 2 - (average(holes.map((hole) => hole.points)) ?? 2),
+        majorBlowUps: holes.filter((hole) => hole.zero).length,
+        mildDamage: holes.filter((hole) => hole.one).length,
       }))
       .sort((a, b) => b.averageVsExpectation - a.averageVsExpectation)
       .slice(0, 6),
-    backNineCollapses: rounds.filter((round) => round.front9Score !== null && round.back9Score !== null && round.back9Score - round.front9Score >= 4).length,
+    backNineCollapses: rounds.filter((round) => round.front9Stableford !== null && round.back9Stableford !== null && round.front9Stableford - round.back9Stableford >= 4).length,
   };
 }
 
@@ -246,6 +247,7 @@ export function buildHandicapTrendData(history: HandicapEntry[], rounds: Handica
     label: round.shortDate,
     handicap: handicapForDate(history, round.date),
     grossAverage: average(rounds.slice(Math.max(0, index - 4), index + 1).map((round) => round.grossScore18)),
+    stablefordAverage: average(rounds.slice(Math.max(0, index - 4), index + 1).map((round) => round.stablefordTotal18)),
     performanceVsHandicap: round.performanceVsHandicap18,
     performanceTrend: average(rounds.slice(Math.max(0, index - 4), index + 1).map((round) => round.performanceVsHandicap18)),
   }));
@@ -255,6 +257,7 @@ export function buildHandicapTrendData(history: HandicapEntry[], rounds: Handica
     label: entry.date.slice(2),
     handicap: entry.hcp,
     grossAverage: null,
+    stablefordAverage: null,
     performanceVsHandicap: null,
     performanceTrend: null,
   }));
@@ -348,13 +351,17 @@ export function buildHandicapInsights(rounds: HandicapRoundMetric[], analysis: H
   if (forecast?.projectedHandicap !== null && forecast?.projectedHandicap !== undefined) {
     insights.push(`Recent scoring suggests pace for reaching ${formatNumber(forecast.projectedHandicap, 1)} by season end.`);
   }
+  const recentStableford = average(rounds.slice(-10).map((round) => round.stablefordTotal18));
+  if (recentStableford !== null) {
+    insights.push(`You are averaging ${formatNumber(recentStableford, 1)} Stableford points over the last 10 rounds.`);
+  }
   const recent = average(rounds.slice(-5).map((round) => round.performanceVsHandicap18));
   const allTime = average(rounds.map((round) => round.performanceVsHandicap18));
   if (recent !== null) {
-    insights.push(`Recent rounds are ${recent <= 0 ? "outperforming" : "trailing"} your ${formatNumber(handicap, 1)} handicap baseline by ${formatNumber(Math.abs(recent), 1)} strokes.`);
+    insights.push(`Recent rounds are ${recent <= 0 ? "above" : "below"} the 36-point Stableford handicap expectation by ${formatNumber(Math.abs(recent), 1)} points.`);
   }
   if (allTime !== null) {
-    insights.push(`${rounds.filter((round) => (round.performanceVsHandicap18 ?? 0) < -0.5).length} rounds beat handicap expectation; ${rounds.filter((round) => (round.performanceVsHandicap18 ?? 0) > 0.5).length} finished above it.`);
+    insights.push(`${rounds.filter((round) => (round.stablefordVsExpectation18 ?? 0) > 0.5).length} rounds beat the 36-point expectation; ${rounds.filter((round) => (round.stablefordVsExpectation18 ?? 0) < -0.5).length} finished below it.`);
   }
   if (forecast?.officialMonthlyRate !== null && forecast?.scoringAdjustmentMonthly !== null && forecast?.officialMonthlyRate !== undefined && forecast?.scoringAdjustmentMonthly !== undefined) {
     if (forecast.scoringAdjustmentMonthly < forecast.officialMonthlyRate - 0.15) {
@@ -367,18 +374,14 @@ export function buildHandicapInsights(rounds: HandicapRoundMetric[], analysis: H
   const totals = analysis.summary;
   if (totals.totalHoles) {
     const stableRate = ((totals.stable + totals.outperforming) / totals.totalHoles) * 100;
-    insights.push(`${formatNumber(stableRate, 0)}% of holes are stable or better against the current handicap model.`);
+    insights.push(`${formatNumber(stableRate, 0)}% of holes are producing at least two Stableford points.`);
   }
 
-  if (analysis.blowUpThresholdToPar >= 3) {
-    insights.push(`${analysis.blowUpThresholdToPar === 3 ? "Triple bogeys" : "Quadruple bogeys"}, not doubles, are the true blow-up line at your current handicap.`);
-  } else {
-    insights.push("Double bogeys are the current blow-up line because the handicap baseline is below mid-handicap range.");
-  }
+  insights.push("Zero-point holes are the true blow-up line in this handicap model.");
 
   const worst = analysis.worstHoleNumbers[0];
   if (worst) {
-    insights.push(`Hole ${worst.holeNumber} is leaking ${formatNumber(worst.averageVsExpectation, 1)} strokes versus handicap expectation on average.`);
+    insights.push(`Hole ${worst.holeNumber} is the recurring zero-point leak, with ${worst.majorBlowUps} zero-point results recorded.`);
   }
 
   return insights.slice(0, 5);
@@ -398,6 +401,9 @@ export function attachRoundHandicapContext(rounds: RawRound[], history: Handicap
       round_handicap_context: {
         handicap_at_round: hcpEntry?.hcp ?? DEFAULT_HANDICAP,
         handicap_source: hcpEntry?.source ?? "default" as const,
+        official_stableford_points: officialMatch.record?.points ?? null,
+        official_playing_handicap: officialMatch.record?.playingHandicap ?? null,
+        official_holes_played: officialMatch.record?.holesPlayed ?? null,
         nearest_official_record_date: officialMatch.context.nearest_official_record_date,
         nearest_official_handicap: officialMatch.context.nearest_official_handicap,
         matched_official_record_id: officialMatch.context.matched_official_record_id,
@@ -456,6 +462,10 @@ function calculateRoundPerformanceVsHandicap18(round: RoundMetric, handicap: num
   return scaleTo18(round.grossScore - expectedScore, round.normalizationFactor);
 }
 
+function scaleToRound(value18: number | null, normalizationFactor: number) {
+  return value18 === null ? null : value18 / normalizationFactor;
+}
+
 function handicapForDate(history: HandicapEntry[], date: string) {
   const normalized = normalizeHandicapHistory(history);
   return [...normalized].reverse().find((entry) => entry.date <= date)?.hcp ?? normalized[0]?.hcp ?? DEFAULT_HANDICAP;
@@ -501,6 +511,11 @@ function collapseUnchangedHandicapEntries(entries: HandicapEntry[]) {
       return;
     }
 
+    if (entry.source === "min-golf" && hasRoundScoringData(entry)) {
+      collapsed.push(entry);
+      return;
+    }
+
     if (entry.source === "min-golf" && previous.source === "manual" && previous.date === entry.date) {
       collapsed[collapsed.length - 1] = entry;
     }
@@ -509,7 +524,13 @@ function collapseUnchangedHandicapEntries(entries: HandicapEntry[]) {
   return collapsed;
 }
 
-function findOfficialMatch(round: RawRound, history: HandicapEntry[]): { context: RoundHandicapContext } {
+function hasRoundScoringData(entry: HandicapEntry) {
+  return entry.points !== null && entry.points !== undefined
+    || entry.playingHandicap !== null && entry.playingHandicap !== undefined
+    || entry.adjustedGrossScore !== null && entry.adjustedGrossScore !== undefined;
+}
+
+function findOfficialMatch(round: RawRound, history: HandicapEntry[]): { context: RoundHandicapContext; record: HandicapEntry | null } {
   const date = round.round_metadata?.date ?? "";
   const gross = num(round.score_summary?.gross_score);
   const course = `${round.round_metadata?.course_name ?? ""} ${round.round_metadata?.tee_name ?? ""}`.toLowerCase();
@@ -540,8 +561,12 @@ function findOfficialMatch(round: RawRound, history: HandicapEntry[]): { context
       nearest_official_handicap: nearest?.hcp ?? null,
       matched_official_record_id: best?.recordId ?? null,
       match_confidence: confidence,
+      official_stableford_points: best?.points ?? null,
+      official_playing_handicap: best?.playingHandicap ?? null,
+      official_holes_played: best?.holesPlayed ?? null,
       match_notes: notes,
     },
+    record: best ?? null,
   };
 }
 

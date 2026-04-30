@@ -19,6 +19,7 @@ export function ClubPerformance({ rows, trends }: { rows: ClubMetric[]; trends: 
                 <th>Club</th>
                 <th>Shots</th>
                 <th>Avg SG</th>
+                <th>Confidence</th>
                 <th>Bad outcomes</th>
               </tr>
             </thead>
@@ -28,6 +29,7 @@ export function ClubPerformance({ rows, trends }: { rows: ClubMetric[]; trends: 
                   <td>{row.club}</td>
                   <td>{row.uses}</td>
                   <td className={(row.avgStrokesGained ?? 0) >= 0 ? "good" : "bad"}>{formatNumber(row.avgStrokesGained, 2)}</td>
+                  <td>{formatNumber(row.confidenceScore, 0)}</td>
                   <td>{formatNumber(row.badOutcomeRate, 0)}%</td>
                 </tr>
               ))}
@@ -35,6 +37,7 @@ export function ClubPerformance({ rows, trends }: { rows: ClubMetric[]; trends: 
           </table>
         </article>
         <ClubChart title="Bad Outcome Frequency" data={rows.slice(0, 12)} dataKey="badOutcomeRate" fill="var(--red)" />
+        <ClubChart title="Club Confidence Ranking" data={rows.filter((row) => row.confidenceScore !== null).sort((a, b) => (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0)).slice(0, 12)} dataKey="confidenceScore" fill="var(--green)" />
       </section>
       <section className="club-trend-section">
         <div className="section-heading">

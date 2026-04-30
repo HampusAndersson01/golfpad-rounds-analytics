@@ -135,6 +135,13 @@ function normalizeCsvRows(roundRows: CsvRow[], holeRows: CsvRow[], shotRows: Csv
         return {
           hole_number: holeNumber,
           hole_par: par,
+          stroke_index:
+            toNumber(holeRow["stroke index"]) ??
+            toNumber(holeRow["handicap stroke index"]) ??
+            toNumber(holeRow["hole handicap"]) ??
+            toNumber(holeRow["hcp"]) ??
+            toNumber(holeRow["SI"]) ??
+            toNumber(holeRow["si"]),
           total_strokes: strokes,
           putts: toNumber(holeRow["putts"]),
           penalties: toNumber(holeRow["penalties"]),

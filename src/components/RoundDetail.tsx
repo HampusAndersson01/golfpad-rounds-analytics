@@ -1,4 +1,4 @@
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatNumber, type RoundMetric } from "../analytics";
 import type { HandicapRoundMetric } from "../handicap";
 
@@ -14,8 +14,7 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
   const categorySummary = summarizeShots(selectedRound);
   const holeRows = selectedRound.holes.map((hole) => ({
     hole: hole.hole_number,
-    strokes: hole.total_strokes,
-    toPar: hole.hole_score_to_par ?? hole.total_strokes - hole.hole_par,
+    stableford: selectedRound.stablefordPerHole.find((row) => row.holeNumber === hole.hole_number)?.points ?? null,
   }));
   const handicapEvaluations = "handicapHoleEvaluations" in selectedRound ? selectedRound.handicapHoleEvaluations : [];
 
@@ -26,8 +25,8 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
         {rounds.map((round) => (
           <button key={round.id} className={round.id === selectedRound.id ? "selected" : ""} onClick={() => onSelectRound(round.id)} type="button">
             <span>{round.dateLabel}</span>
-            <strong>{round.grossScore ?? "-"} · {round.courseName}</strong>
-            {round.normalizationFactor !== 1 && <small>{round.completedHoles} holes, {formatNumber(round.grossScore18, 1)} per 18</small>}
+            <strong>{formatNumber(round.stablefordTotal, 0)} pts - {round.courseName}</strong>
+            <small>{round.grossScore ?? "-"} gross{round.normalizationFactor !== 1 ? `, ${formatNumber(round.stablefordTotal18, 1)} pts per 18` : ""}</small>
           </button>
         ))}
       </aside>
@@ -35,25 +34,29 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
         <article className="panel round-summary">
           <h2>{selectedRound.courseName}</h2>
           <div className="summary-strip">
-            <span><small>Score</small>{selectedRound.grossScore}</span>
-            <span><small>Score / 18</small>{formatNumber(selectedRound.grossScore18, 1)}</span>
-            <span><small>Over par</small>{selectedRound.grossOverPar}</span>
+            <span><small>Stableford</small>{formatNumber(selectedRound.stablefordTotal, 0)}</span>
+            <span><small>Stableford / 18</small>{formatNumber(selectedRound.stablefordTotal18, 1)}</span>
+            <span><small>Vs expectation</small>{formatNumber(selectedRound.stablefordVsExpectation18, 1)}</span>
+            <span><small>0-point holes</small>{selectedRound.zeroPointHoles}</span>
+            <span><small>3+ point holes</small>{selectedRound.gainedHoles}</span>
+            <span><small>Gross</small>{selectedRound.grossScore}</span>
             <span><small>Putts</small>{selectedRound.putts}</span>
             <span><small>Penalties</small>{selectedRound.penalties}</span>
-            <span><small>GIR</small>{formatNumber(selectedRound.girPct, 1)}%</span>
-            <span><small>FIR</small>{formatNumber(selectedRound.firPct, 1)}%</span>
-            {"performanceVsHandicap18" in selectedRound && <span><small>Vs hcp</small>{formatNumber(selectedRound.performanceVsHandicap18, 1)}</span>}
           </div>
         </article>
         <article className="panel chart-panel">
-          <h2>Per-Hole Score Bars</h2>
+          <h2>Stableford Points Per Hole</h2>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={holeRows} margin={{ top: 8, right: 12, bottom: 8, left: -12 }}>
               <CartesianGrid stroke="rgba(255,255,255,.08)" vertical={false} />
               <XAxis dataKey="hole" tick={{ fill: "#8e9b8d", fontSize: 12 }} tickLine={false} axisLine={false} />
               <YAxis tick={{ fill: "#8e9b8d", fontSize: 12 }} tickLine={false} axisLine={false} width={42} />
               <Tooltip contentStyle={{ background: "#151a17", border: "1px solid #2c342e", borderRadius: 8, color: "#f3f4ed" }} />
-              <Bar dataKey="toPar" fill="var(--gold)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="stableford" radius={[4, 4, 0, 0]}>
+                {holeRows.map((row) => (
+                  <Cell key={row.hole} fill={row.stableford === 0 ? "var(--red)" : row.stableford !== null && row.stableford >= 3 ? "var(--green)" : "var(--gold)"} />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </article>
@@ -64,27 +67,34 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
               <tr>
                 <th>Hole</th>
                 <th>Par</th>
-                <th>Strokes</th>
+                <th>Gross</th>
+                <th>SI</th>
+                <th>Hcp strokes</th>
+                <th>Net</th>
+                <th>Pts</th>
                 <th>Putts</th>
                 <th>Pen</th>
                 <th>GIR</th>
-                <th>Hcp exp.</th>
                 <th>Class</th>
               </tr>
             </thead>
             <tbody>
               {selectedRound.holes.map((hole) => {
                 const evaluation = handicapEvaluations.find((row) => row.holeNumber === hole.hole_number);
+                const stableford = selectedRound.stablefordPerHole.find((row) => row.holeNumber === hole.hole_number);
                 return (
-                  <tr key={hole.hole_number}>
+                  <tr key={hole.hole_number} className={stableford?.points === 0 ? "zero-hole" : stableford && stableford.points >= 3 ? "gained-hole" : undefined}>
                     <td>{hole.hole_number}</td>
                     <td>{hole.hole_par}</td>
                     <td>{hole.total_strokes}</td>
+                    <td>{stableford?.strokeIndex ?? "-"}</td>
+                    <td>{stableford?.handicapStrokes ?? "-"}</td>
+                    <td>{stableford?.netScore ?? "-"}</td>
+                    <td>{stableford?.points ?? "-"}</td>
                     <td>{hole.putts ?? "-"}</td>
                     <td>{hole.penalties ?? "-"}</td>
                     <td>{hole.gir ? "Yes" : "No"}</td>
-                    <td>{evaluation ? formatNumber(evaluation.expectedStrokes, 1) : "-"}</td>
-                    <td>{evaluation ? readableClass(evaluation.classification) : "-"}</td>
+                    <td>{stableford ? readableStablefordClass(stableford.points) : evaluation ? readableClass(evaluation.classification) : "-"}</td>
                   </tr>
                 );
               })}
@@ -115,6 +125,14 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
       </div>
     </section>
   );
+}
+
+function readableStablefordClass(points: number) {
+  if (points === 0) return "0 pts - blow-up";
+  if (points === 1) return "1 pt - damage";
+  if (points === 2) return "2 pts - stable";
+  if (points === 3) return "3 pts - gained";
+  return "4+ pts - exceptional";
 }
 
 function readableClass(value: string) {

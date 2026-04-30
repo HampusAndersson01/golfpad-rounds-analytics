@@ -53,10 +53,11 @@ async function ensureDataDir() {
 
 function normalizeDatabase(value) {
   return {
-    version: 1,
+    version: 2,
     updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
     rounds: Array.isArray(value?.rounds) ? value.rounds : [],
     handicapHistory: Array.isArray(value?.handicapHistory) ? value.handicapHistory : [{ date: new Date().toISOString().slice(0, 10), hcp: 28.8 }],
+    strokeIndexConfigs: Array.isArray(value?.strokeIndexConfigs) ? value.strokeIndexConfigs : [],
   };
 }
 
@@ -67,7 +68,7 @@ async function readDatabase() {
     return normalizeDatabase(JSON.parse(raw));
   } catch (error) {
     if (error.code === "ENOENT") {
-      return normalizeDatabase({ version: 1, updatedAt: new Date().toISOString(), rounds: [] });
+      return normalizeDatabase({ version: 2, updatedAt: new Date().toISOString(), rounds: [] });
     }
 
     const backup = `${DATABASE_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -110,7 +111,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "DELETE") {
-      sendJson(res, 200, await writeDatabase({ version: 1, rounds: [] }));
+      sendJson(res, 200, await writeDatabase({ version: 2, rounds: [] }));
       return true;
     }
 

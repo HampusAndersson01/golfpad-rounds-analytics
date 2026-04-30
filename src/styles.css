@@ -589,6 +589,53 @@ h3 {
   font: inherit;
 }
 
+.stroke-index-panel p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.stroke-index-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 2fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.stroke-index-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.stroke-index-grid input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111611;
+  color: var(--text);
+  font: inherit;
+}
+
+.stroke-index-grid button {
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--green);
+  color: #111611;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.stroke-index-grid button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .select-input {
   width: 100%;
   height: 42px;
@@ -699,6 +746,14 @@ td {
 th {
   color: var(--muted);
   font-weight: 600;
+}
+
+tr.zero-hole td {
+  background: rgba(216, 111, 98, 0.12);
+}
+
+tr.gained-hole td {
+  background: rgba(111, 187, 112, 0.1);
 }
 
 .round-detail {
@@ -853,7 +908,8 @@ th {
   .db-actions,
   .two-col,
   .club-grid,
-  .club-trend-grid {
+  .club-trend-grid,
+  .stroke-index-grid {
     grid-template-columns: 1fr;
     display: grid;
   }
