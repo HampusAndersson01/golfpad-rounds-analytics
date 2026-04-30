@@ -1,9 +1,10 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatNumber, type RoundMetric } from "../analytics";
+import type { HandicapRoundMetric } from "../handicap";
 
 type RoundDetailProps = {
-  rounds: RoundMetric[];
-  selectedRound?: RoundMetric;
+  rounds: Array<RoundMetric | HandicapRoundMetric>;
+  selectedRound?: RoundMetric | HandicapRoundMetric;
   onSelectRound: (roundId: string) => void;
 };
 
@@ -16,6 +17,7 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
     strokes: hole.total_strokes,
     toPar: hole.hole_score_to_par ?? hole.total_strokes - hole.hole_par,
   }));
+  const handicapEvaluations = "handicapHoleEvaluations" in selectedRound ? selectedRound.handicapHoleEvaluations : [];
 
   return (
     <section className="round-detail">
@@ -40,6 +42,7 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
             <span><small>Penalties</small>{selectedRound.penalties}</span>
             <span><small>GIR</small>{formatNumber(selectedRound.girPct, 1)}%</span>
             <span><small>FIR</small>{formatNumber(selectedRound.firPct, 1)}%</span>
+            {"performanceVsHandicap18" in selectedRound && <span><small>Vs hcp</small>{formatNumber(selectedRound.performanceVsHandicap18, 1)}</span>}
           </div>
         </article>
         <article className="panel chart-panel">
@@ -65,19 +68,26 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
                 <th>Putts</th>
                 <th>Pen</th>
                 <th>GIR</th>
+                <th>Hcp exp.</th>
+                <th>Class</th>
               </tr>
             </thead>
             <tbody>
-              {selectedRound.holes.map((hole) => (
-                <tr key={hole.hole_number}>
-                  <td>{hole.hole_number}</td>
-                  <td>{hole.hole_par}</td>
-                  <td>{hole.total_strokes}</td>
-                  <td>{hole.putts ?? "-"}</td>
-                  <td>{hole.penalties ?? "-"}</td>
-                  <td>{hole.gir ? "Yes" : "No"}</td>
-                </tr>
-              ))}
+              {selectedRound.holes.map((hole) => {
+                const evaluation = handicapEvaluations.find((row) => row.holeNumber === hole.hole_number);
+                return (
+                  <tr key={hole.hole_number}>
+                    <td>{hole.hole_number}</td>
+                    <td>{hole.hole_par}</td>
+                    <td>{hole.total_strokes}</td>
+                    <td>{hole.putts ?? "-"}</td>
+                    <td>{hole.penalties ?? "-"}</td>
+                    <td>{hole.gir ? "Yes" : "No"}</td>
+                    <td>{evaluation ? formatNumber(evaluation.expectedStrokes, 1) : "-"}</td>
+                    <td>{evaluation ? readableClass(evaluation.classification) : "-"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </article>
@@ -105,6 +115,13 @@ export function RoundDetail({ rounds, selectedRound, onSelectRound }: RoundDetai
       </div>
     </section>
   );
+}
+
+function readableClass(value: string) {
+  if (value === "better") return "Better";
+  if (value === "stable") return "Stable";
+  if (value === "mild-damage") return "Mild damage";
+  return "Major blow-up";
 }
 
 function summarizeShots(round: RoundMetric) {

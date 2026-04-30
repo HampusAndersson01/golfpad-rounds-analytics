@@ -65,6 +65,15 @@ export type RawRound = {
   holes?: RawHole[] | null;
   club_usage_summary?: Record<string, unknown>;
   derived_ai_metrics?: Record<string, number | null | undefined>;
+  round_handicap_context?: {
+    handicap_at_round: number | null;
+    handicap_source: "manual" | "min-golf" | "default" | null;
+    nearest_official_record_date: string | null;
+    nearest_official_handicap: number | null;
+    matched_official_record_id: string | null;
+    match_confidence: "exact" | "date" | "near-date" | "none";
+    match_notes: string[];
+  };
   raw_source_rows?: unknown[];
 };
 

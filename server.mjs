@@ -56,6 +56,7 @@ function normalizeDatabase(value) {
     version: 1,
     updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
     rounds: Array.isArray(value?.rounds) ? value.rounds : [],
+    handicapHistory: Array.isArray(value?.handicapHistory) ? value.handicapHistory : [{ date: new Date().toISOString().slice(0, 10), hcp: 28.8 }],
   };
 }
 
@@ -66,7 +67,7 @@ async function readDatabase() {
     return normalizeDatabase(JSON.parse(raw));
   } catch (error) {
     if (error.code === "ENOENT") {
-      return { version: 1, updatedAt: new Date().toISOString(), rounds: [] };
+      return normalizeDatabase({ version: 1, updatedAt: new Date().toISOString(), rounds: [] });
     }
 
     const backup = `${DATABASE_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -143,6 +144,7 @@ async function serveStatic(req, res) {
     await access(filePath);
     res.writeHead(200, {
       "content-type": CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream",
+      "cache-control": "no-store",
     });
     createReadStream(filePath).pipe(res);
   } catch {

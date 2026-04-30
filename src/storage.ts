@@ -1,5 +1,6 @@
 import type { RawRound } from "./analytics";
 import { buildStableRoundId } from "./golfpadParser";
+import { DEFAULT_HANDICAP, normalizeHandicapHistory, type HandicapEntry } from "./handicap";
 
 const STORAGE_KEY = "golfpad.analytics.rounds.v1";
 const API_ROUNDS_PATH = "/api/rounds";
@@ -8,6 +9,7 @@ export type StoredRoundDatabase = {
   version: 1;
   updatedAt: string;
   rounds: RawRound[];
+  handicapHistory?: HandicapEntry[];
 };
 
 export type ImportMergeResult = {
@@ -36,56 +38,69 @@ const SERVER_STATUS: PersistenceStatus = {
 
 export type LoadRoundDatabaseResult = {
   rounds: RawRound[];
+  handicapHistory: HandicapEntry[];
   status: PersistenceStatus;
 };
 
-function readLocalRoundDatabase(): RawRound[] {
+type LocalRoundDatabase = {
+  rounds: RawRound[];
+  handicapHistory: HandicapEntry[];
+};
+
+function readLocalRoundDatabase(): LocalRoundDatabase {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return { rounds: [], handicapHistory: [{ date: new Date().toISOString().slice(0, 10), hcp: DEFAULT_HANDICAP }] };
     const parsed = JSON.parse(raw) as StoredRoundDatabase;
-    return Array.isArray(parsed.rounds) ? parsed.rounds : [];
+    return {
+      rounds: Array.isArray(parsed.rounds) ? parsed.rounds : [],
+      handicapHistory: normalizeHandicapHistory(parsed.handicapHistory),
+    };
   } catch {
-    return [];
+    return { rounds: [], handicapHistory: [{ date: new Date().toISOString().slice(0, 10), hcp: DEFAULT_HANDICAP }] };
   }
 }
 
-function writeLocalRoundDatabase(rounds: RawRound[]) {
+function writeLocalRoundDatabase(rounds: RawRound[], handicapHistory: HandicapEntry[]) {
   const database: StoredRoundDatabase = {
     version: 1,
     updatedAt: new Date().toISOString(),
     rounds,
+    handicapHistory: normalizeHandicapHistory(handicapHistory),
   };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(database));
 }
 
 export async function loadRoundDatabase(): Promise<LoadRoundDatabaseResult> {
-  const localRounds = readLocalRoundDatabase();
+  const localDatabase = readLocalRoundDatabase();
 
   try {
     const response = await fetch(API_ROUNDS_PATH, { headers: { accept: "application/json" } });
     if (!response.ok) throw new Error(`Database API returned ${response.status}`);
     const parsed = (await response.json()) as StoredRoundDatabase;
     const serverRounds = Array.isArray(parsed.rounds) ? parsed.rounds : [];
+    const serverHandicapHistory = normalizeHandicapHistory(parsed.handicapHistory);
+    const handicapHistory = localDatabase.handicapHistory.length > serverHandicapHistory.length ? localDatabase.handicapHistory : serverHandicapHistory;
 
-    if (localRounds.length) {
-      const merged = mergeNewRounds(serverRounds, localRounds);
+    if (localDatabase.rounds.length) {
+      const merged = mergeNewRounds(serverRounds, localDatabase.rounds);
       if (merged.added > 0) {
-        await saveRoundDatabase(merged.rounds);
+        await saveRoundDatabase(merged.rounds, handicapHistory);
       }
-      return { rounds: merged.rounds, status: SERVER_STATUS };
+      return { rounds: merged.rounds, handicapHistory, status: SERVER_STATUS };
     }
 
-    writeLocalRoundDatabase(serverRounds);
-    return { rounds: serverRounds, status: SERVER_STATUS };
+    writeLocalRoundDatabase(serverRounds, handicapHistory);
+    return { rounds: serverRounds, handicapHistory, status: SERVER_STATUS };
   } catch (error) {
     console.warn("Persistent server database is unavailable; falling back to localStorage.", error);
-    return { rounds: localRounds, status: LOCAL_ONLY_STATUS };
+    return { rounds: localDatabase.rounds, handicapHistory: localDatabase.handicapHistory, status: LOCAL_ONLY_STATUS };
   }
 }
 
-export async function saveRoundDatabase(rounds: RawRound[]): Promise<PersistenceStatus> {
-  writeLocalRoundDatabase(rounds);
+export async function saveRoundDatabase(rounds: RawRound[], handicapHistory: HandicapEntry[]): Promise<PersistenceStatus> {
+  const normalizedHandicapHistory = normalizeHandicapHistory(handicapHistory);
+  writeLocalRoundDatabase(rounds, normalizedHandicapHistory);
 
   try {
     const response = await fetch(API_ROUNDS_PATH, {
@@ -95,6 +110,7 @@ export async function saveRoundDatabase(rounds: RawRound[]): Promise<Persistence
         version: 1,
         updatedAt: new Date().toISOString(),
         rounds,
+        handicapHistory: normalizedHandicapHistory,
       }),
     });
     if (!response.ok) throw new Error(`Database API returned ${response.status}`);
@@ -129,11 +145,20 @@ export function mergeNewRounds(existing: RawRound[], incoming: RawRound[]): Impo
   return { rounds: next, added: next.length - existing.length, duplicates };
 }
 
-export async function clearRoundDatabase(): Promise<PersistenceStatus> {
-  window.localStorage.removeItem(STORAGE_KEY);
+export async function clearRoundDatabase(handicapHistory: HandicapEntry[]): Promise<PersistenceStatus> {
+  writeLocalRoundDatabase([], handicapHistory);
 
   try {
-    const response = await fetch(API_ROUNDS_PATH, { method: "DELETE", headers: { accept: "application/json" } });
+    const response = await fetch(API_ROUNDS_PATH, {
+      method: "PUT",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        rounds: [],
+        handicapHistory: normalizeHandicapHistory(handicapHistory),
+      }),
+    });
     if (!response.ok) throw new Error(`Database API returned ${response.status}`);
     return SERVER_STATUS;
   } catch (error) {
@@ -142,7 +167,7 @@ export async function clearRoundDatabase(): Promise<PersistenceStatus> {
   }
 }
 
-export function downloadRoundDatabase(rounds: RawRound[]) {
+export function downloadRoundDatabase(rounds: RawRound[], handicapHistory: HandicapEntry[]) {
   const blob = new Blob(
     [
       JSON.stringify(
@@ -150,6 +175,7 @@ export function downloadRoundDatabase(rounds: RawRound[]) {
           version: 1,
           exportedAt: new Date().toISOString(),
           rounds,
+          handicapHistory: normalizeHandicapHistory(handicapHistory),
         },
         null,
         2,

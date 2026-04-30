@@ -290,6 +290,16 @@ h3 {
   background: #182018;
 }
 
+.drop-zone:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.drop-zone:disabled:hover {
+  border-color: #52604f;
+  background: #141914;
+}
+
 .drop-zone span {
   font-weight: 700;
 }
@@ -529,6 +539,138 @@ h3 {
   font-weight: 700;
 }
 
+.handicap-settings-grid {
+  align-items: start;
+}
+
+.handicap-settings {
+  display: grid;
+  gap: 18px;
+}
+
+.current-handicap {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.current-handicap span,
+.handicap-settings label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.current-handicap strong {
+  font-size: 42px;
+  line-height: 1;
+}
+
+.handicap-settings form {
+  display: grid;
+  gap: 8px;
+}
+
+.handicap-form-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.handicap-form-row input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111611;
+  color: var(--text);
+  font: inherit;
+}
+
+.select-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111611;
+  color: var(--text);
+  font: inherit;
+}
+
+.select-input:focus {
+  outline: 2px solid rgba(111, 187, 112, 0.35);
+  outline-offset: 1px;
+}
+
+.handicap-form-row input:focus {
+  outline: 2px solid rgba(111, 187, 112, 0.35);
+  outline-offset: 1px;
+}
+
+.handicap-form-row button {
+  min-width: 92px;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--green);
+  color: #111611;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.handicap-form-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.forecast-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.forecast-value {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.forecast-value span,
+.forecast-value small {
+  color: var(--muted);
+}
+
+.forecast-value strong {
+  font-size: 48px;
+  line-height: 1;
+  color: var(--green);
+}
+
+.forecast-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.forecast-grid span {
+  display: block;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-weight: 700;
+}
+
+.forecast-grid small {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
 .form-values small,
 .summary-strip small {
   display: block;
@@ -732,6 +874,7 @@ th {
   .form-grid,
   .import-detail-grid,
   .import-summary,
+  .forecast-grid,
   .summary-strip {
     grid-template-columns: 1fr;
   }
